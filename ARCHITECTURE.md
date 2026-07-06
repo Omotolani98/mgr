@@ -77,13 +77,17 @@ milestone because the current SDK is read-only.
 The terminal UI lives in `internals/tui` and uses Bubble Tea v2 via the
 `charm.land/...` import paths.
 
-The MVP TUI has two modes:
+The TUI has two modes:
 
-- Servers: list inventory, move selection, run health checks, and open SSH.
-- Environment: show Foostash configuration and verify SDK access.
+- Servers: list inventory, filter by `/`, move selection, toggle details with
+  enter, run health checks, and open SSH.
+- Environment: show Foostash configuration, verify SDK access, and display the
+  last successful check time and secret count while keeping secret values
+  hidden.
 
 The model stores terminal size from `tea.WindowSizeMsg` and uses v2's
-declarative `tea.View` return value.
+declarative `tea.View` return value. Wide terminals render the server list and
+detail panel side by side; narrow terminals stack the views.
 
 ## Extension Points
 
