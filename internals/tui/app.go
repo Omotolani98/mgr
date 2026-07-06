@@ -326,6 +326,11 @@ func (m model) renderServerDetail() string {
 		b.WriteString(fmt.Sprintf("identity: %s\n", empty(srv.IdentityFile)))
 		b.WriteString(fmt.Sprintf("group: %s\n", empty(srv.Group)))
 		b.WriteString(fmt.Sprintf("env: %s\n", empty(srv.Env)))
+		b.WriteString(fmt.Sprintf("source: %s\n", empty(srv.Source)))
+		b.WriteString(fmt.Sprintf("source_id: %s\n", empty(srv.SourceID)))
+		if !srv.LastSeenAt.IsZero() {
+			b.WriteString(fmt.Sprintf("last_seen: %s\n", srv.LastSeenAt.Format(time.RFC3339)))
+		}
 		b.WriteString(fmt.Sprintf("tags: %s\n", empty(strings.Join(srv.Tags, ","))))
 		if !srv.CreatedAt.IsZero() {
 			b.WriteString(fmt.Sprintf("created: %s\n", srv.CreatedAt.Format(time.RFC3339)))
@@ -427,6 +432,8 @@ func (m model) filteredServers() []inventory.Server {
 			srv.User,
 			srv.Group,
 			srv.Env,
+			srv.Source,
+			srv.SourceID,
 			strings.Join(srv.Tags, " "),
 		}, " "))
 		if strings.Contains(haystack, query) {

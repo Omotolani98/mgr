@@ -17,6 +17,7 @@ import (
 	mgrenv "github.com/Omotolani98/mgr/internals/env"
 	"github.com/Omotolani98/mgr/internals/health"
 	"github.com/Omotolani98/mgr/internals/inventory"
+	"github.com/Omotolani98/mgr/internals/provider"
 	"github.com/Omotolani98/mgr/internals/remoteops"
 	"github.com/Omotolani98/mgr/internals/sshconfig"
 	"github.com/Omotolani98/mgr/internals/tui"
@@ -57,6 +58,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newServerCmd(app),
+		newProviderCmd(app),
 		newEnvCmd(app),
 		newTUICmd(app),
 	)
@@ -152,16 +154,17 @@ func newServerListCmd(app *App) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tHOST\tPORT\tUSER\tGROUP\tENV\tTAGS")
+			fmt.Fprintln(w, "NAME\tHOST\tPORT\tUSER\tGROUP\tENV\tSOURCE\tTAGS")
 			for _, srv := range servers {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-					srv.Name, srv.Host, srv.Port, srv.User, srv.Group, srv.Env, strings.Join(srv.Tags, ","))
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+					srv.Name, srv.Host, srv.Port, srv.User, srv.Group, srv.Env, srv.Source, strings.Join(srv.Tags, ","))
 			}
 			return w.Flush()
 		},
 	}
 	cmd.Flags().StringVar(&filter.Group, "group", "", "Filter by group")
 	cmd.Flags().StringVar(&filter.Tag, "tag", "", "Filter by tag")
+	cmd.Flags().StringVar(&filter.Source, "source", "", "Filter by source")
 	return cmd
 }
 
@@ -247,7 +250,7 @@ func newServerImportCmd(app *App) *cobra.Command {
 		Use:   "ssh-config",
 		Short: "Import Host entries from OpenSSH config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			servers, err := sshconfig.Import(path)
+			servers, err := discoverFromProvider(cmd.Context(), "ssh-config", path)
 			if err != nil {
 				return err
 			}
@@ -262,6 +265,68 @@ func newServerImportCmd(app *App) *cobra.Command {
 	sshConfigCmd.Flags().StringVar(&path, "path", sshconfig.DefaultPath(), "SSH config path")
 	cmd.AddCommand(sshConfigCmd)
 	return cmd
+}
+
+func newProviderCmd(app *App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "provider",
+		Short: "Discover inventory from external sources",
+	}
+	cmd.AddCommand(
+		newProviderListCmd(),
+		newProviderSyncCmd(app),
+	)
+	return cmd
+}
+
+func newProviderListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List available inventory providers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tDESCRIPTION")
+			for _, p := range provider.DefaultRegistry().List() {
+				fmt.Fprintf(w, "%s\t%s\n", p.Name(), p.Description())
+			}
+			return w.Flush()
+		},
+	}
+}
+
+func newProviderSyncCmd(app *App) *cobra.Command {
+	var path string
+	cmd := &cobra.Command{
+		Use:   "sync SOURCE",
+		Short: "Discover servers from a provider and upsert them into inventory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			servers, err := discoverFromProvider(cmd.Context(), args[0], path)
+			if err != nil {
+				return err
+			}
+			count, err := app.store.Import(servers)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "synced %d server(s) from %s\n", count, args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Provider path override; supported by ssh-config")
+	return cmd
+}
+
+func discoverFromProvider(ctx context.Context, name, path string) ([]inventory.Server, error) {
+	registry := provider.DefaultRegistry()
+	if name == "ssh-config" && path != "" {
+		registry = provider.NewRegistry(provider.NewSSHConfigProvider(path))
+	}
+	p, err := registry.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	return p.Discover(ctx)
 }
 
 func newServerOpsCmd(app *App) *cobra.Command {
@@ -597,6 +662,15 @@ func printServer(w io.Writer, srv inventory.Server) {
 	}
 	if srv.Env != "" {
 		fmt.Fprintf(w, "env: %s\n", srv.Env)
+	}
+	if srv.Source != "" {
+		fmt.Fprintf(w, "source: %s\n", srv.Source)
+	}
+	if srv.SourceID != "" {
+		fmt.Fprintf(w, "source_id: %s\n", srv.SourceID)
+	}
+	if !srv.LastSeenAt.IsZero() {
+		fmt.Fprintf(w, "last_seen_at: %s\n", srv.LastSeenAt.Format(time.RFC3339))
 	}
 	if len(srv.Tags) > 0 {
 		fmt.Fprintf(w, "tags: %s\n", strings.Join(srv.Tags, ","))

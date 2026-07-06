@@ -52,6 +52,32 @@ func TestFileStoreUpsertListGetRemove(t *testing.T) {
 	}
 }
 
+func TestFileStoreSourceMetadata(t *testing.T) {
+	store := NewFileStore(filepath.Join(t.TempDir(), "inventory.yaml"))
+	saved, err := store.Upsert(Server{
+		Name:   "prod-api",
+		Host:   "10.0.0.5",
+		Source: "ssh-config",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if saved.SourceID != "prod-api" {
+		t.Fatalf("SourceID = %q, want prod-api", saved.SourceID)
+	}
+	if saved.LastSeenAt.IsZero() {
+		t.Fatal("LastSeenAt is zero")
+	}
+
+	filtered, err := store.List(Filter{Source: "ssh-config"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Name != "prod-api" {
+		t.Fatalf("filtered = %#v, want prod-api", filtered)
+	}
+}
+
 func TestFileStoreRejectsIncompleteServer(t *testing.T) {
 	store := NewFileStore(filepath.Join(t.TempDir(), "inventory.yaml"))
 	if _, err := store.Upsert(Server{Host: "localhost"}); err == nil {
