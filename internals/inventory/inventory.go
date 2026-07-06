@@ -26,6 +26,9 @@ type Server struct {
 	Tags         []string  `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Group        string    `yaml:"group,omitempty" json:"group,omitempty"`
 	Env          string    `yaml:"env,omitempty" json:"env,omitempty"`
+	Source       string    `yaml:"source,omitempty" json:"source,omitempty"`
+	SourceID     string    `yaml:"source_id,omitempty" json:"source_id,omitempty"`
+	LastSeenAt   time.Time `yaml:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
 	CreatedAt    time.Time `yaml:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `yaml:"updated_at" json:"updated_at"`
 }
@@ -40,8 +43,9 @@ type fileData struct {
 }
 
 type Filter struct {
-	Group string
-	Tag   string
+	Group  string
+	Tag    string
+	Source string
 }
 
 func NewFileStore(path string) *FileStore {
@@ -63,6 +67,9 @@ func (s *FileStore) List(filter Filter) ([]Server, error) {
 			continue
 		}
 		if filter.Tag != "" && !hasTag(srv.Tags, filter.Tag) {
+			continue
+		}
+		if filter.Source != "" && srv.Source != filter.Source {
 			continue
 		}
 		out = append(out, srv)
@@ -97,6 +104,9 @@ func (s *FileStore) Upsert(server Server) (Server, error) {
 		server.Port = 22
 	}
 	server.ID = normalizeID(server.ID, server.Name)
+	if server.SourceID == "" && server.Source != "" {
+		server.SourceID = server.ID
+	}
 	server.Tags = normalizeTags(server.Tags)
 
 	data, err := s.load()
@@ -109,6 +119,9 @@ func (s *FileStore) Upsert(server Server) (Server, error) {
 			if server.CreatedAt.IsZero() {
 				server.CreatedAt = existing.CreatedAt
 			}
+			if server.LastSeenAt.IsZero() {
+				server.LastSeenAt = existing.LastSeenAt
+			}
 			server.UpdatedAt = now
 			data.Servers[i] = server
 			return server, s.save(data)
@@ -116,6 +129,9 @@ func (s *FileStore) Upsert(server Server) (Server, error) {
 	}
 	server.CreatedAt = now
 	server.UpdatedAt = now
+	if server.LastSeenAt.IsZero() && server.Source != "" {
+		server.LastSeenAt = now
+	}
 	data.Servers = append(data.Servers, server)
 	return server, s.save(data)
 }

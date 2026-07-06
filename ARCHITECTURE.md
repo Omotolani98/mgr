@@ -14,6 +14,7 @@ tree in `internals/cli`.
 Top-level commands:
 
 - `mgr server`: local server inventory operations.
+- `mgr provider`: external inventory discovery sources.
 - `mgr env`: read-only Foostash SDK operations.
 - `mgr tui`: Bubble Tea terminal dashboard.
 
@@ -34,14 +35,19 @@ When the OS config directory is unavailable, mgr falls back to `~/.config/mgr`.
 Both files are written with user-only permissions.
 
 Server records include name, ID, host, SSH port, user, identity file, tags,
-group, environment, and timestamps. IDs are generated from the server name when
-not provided. Tags are normalized to lowercase, deduplicated, and sorted.
+group, environment, source metadata, and timestamps. IDs are generated from the
+server name when not provided. Tags are normalized to lowercase, deduplicated,
+and sorted.
 
 ## Server Management
 
 The `internals/inventory` package is the source of truth for server records.
-The `internals/sshconfig` package imports simple OpenSSH `Host` blocks into
-inventory records and tags them with `ssh-config`.
+
+Discovery providers live in `internals/provider`. Providers return
+`inventory.Server` records with `source`, `source_id`, and `last_seen_at`
+metadata, then `mgr provider sync SOURCE` upserts them into inventory. The first
+provider is `ssh-config`, backed by the existing `internals/sshconfig` parser
+for simple OpenSSH `Host` blocks.
 
 Health checks in `internals/health` are TCP reachability checks against the
 server SSH endpoint. They intentionally do not require remote shell access.
