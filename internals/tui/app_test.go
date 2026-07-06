@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Omotolani98/mgr/internals/health"
 	"github.com/Omotolani98/mgr/internals/inventory"
+	"github.com/Omotolani98/mgr/internals/remoteops"
 )
 
 func TestServerNavigationBounds(t *testing.T) {
@@ -111,6 +112,45 @@ func TestEnvStatusDisplay(t *testing.T) {
 	}
 }
 
+func TestOpsSnapshotDisplay(t *testing.T) {
+	checkedAt := time.Date(2026, 7, 6, 18, 30, 0, 0, time.UTC)
+	m := testModel()
+
+	m = updateModel(t, m, opsMsg{
+		server: "prod-api",
+		snap: remoteops.Snapshot{
+			Server:    "prod-api",
+			Uptime:    "up 1 day",
+			Disk:      "disk output",
+			Memory:    "memory output",
+			Processes: "process output",
+			CheckedAt: checkedAt,
+		},
+	})
+
+	out := m.renderServers()
+	for _, want := range []string{"ops_checked: 2026-07-06T18:30:00Z", "== uptime ==", "disk output"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("renderServers() missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestOpsErrorDisplay(t *testing.T) {
+	m := testModel()
+	m = updateModel(t, m, opsMsg{server: "prod-api", err: errTest("ssh failed")})
+	if m.errMsg != "ssh failed" {
+		t.Fatalf("errMsg = %q, want ssh failed", m.errMsg)
+	}
+}
+
+func TestTrimOutput(t *testing.T) {
+	got := trimOutput("abcdef", 3)
+	if got != "abc\n..." {
+		t.Fatalf("trimOutput = %q", got)
+	}
+}
+
 func testModel() model {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	return model{
@@ -142,6 +182,7 @@ func testModel() model {
 			},
 		},
 		health: map[string]health.Status{},
+		ops:    map[string]remoteops.Snapshot{},
 	}
 }
 
@@ -167,3 +208,7 @@ func key(text string) tea.KeyPressMsg {
 func special(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code})
 }
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }

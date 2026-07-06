@@ -17,6 +17,7 @@ import (
 	mgrenv "github.com/Omotolani98/mgr/internals/env"
 	"github.com/Omotolani98/mgr/internals/health"
 	"github.com/Omotolani98/mgr/internals/inventory"
+	"github.com/Omotolani98/mgr/internals/remoteops"
 	"github.com/Omotolani98/mgr/internals/sshconfig"
 	"github.com/Omotolani98/mgr/internals/tui"
 	"github.com/spf13/cobra"
@@ -26,6 +27,7 @@ type App struct {
 	paths config.Paths
 	cfg   config.Config
 	store *inventory.FileStore
+	ops   remoteops.Runner
 }
 
 type envFlags struct {
@@ -80,6 +82,9 @@ func (a *App) init() error {
 	a.paths = paths
 	a.cfg = cfg
 	a.store = inventory.NewFileStore(paths.InventoryPath)
+	if a.ops == nil {
+		a.ops = remoteops.SystemSSHRunner{}
+	}
 	config.InitConfig()
 	return nil
 }
@@ -97,6 +102,12 @@ func newServerCmd(app *App) *cobra.Command {
 		newServerCheckCmd(app),
 		newServerSSHCmd(app),
 		newServerImportCmd(app),
+		newServerOpsCmd(app),
+		newServerUptimeCmd(app),
+		newServerDiskCmd(app),
+		newServerMemoryCmd(app),
+		newServerProcessesCmd(app),
+		newServerLogsCmd(app),
 	)
 	return cmd
 }
@@ -253,6 +264,102 @@ func newServerImportCmd(app *App) *cobra.Command {
 	return cmd
 }
 
+func newServerOpsCmd(app *App) *cobra.Command {
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "ops NAME",
+		Short: "Run a read-only server inspection snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			srv, err := app.store.Get(args[0])
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			snap, err := remoteops.DefaultSnapshot(ctx, app.ops, srv)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), snap.String())
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", 20*time.Second, "Remote command timeout")
+	return cmd
+}
+
+func newServerUptimeCmd(app *App) *cobra.Command {
+	return newServerRemoteCmd(app, "uptime NAME", "Show remote uptime", 10*time.Second, remoteops.Uptime)
+}
+
+func newServerDiskCmd(app *App) *cobra.Command {
+	return newServerRemoteCmd(app, "disk NAME", "Show remote root filesystem usage", 10*time.Second, remoteops.Disk)
+}
+
+func newServerMemoryCmd(app *App) *cobra.Command {
+	return newServerRemoteCmd(app, "memory NAME", "Show remote memory usage", 10*time.Second, remoteops.Memory)
+}
+
+func newServerProcessesCmd(app *App) *cobra.Command {
+	return newServerRemoteCmd(app, "processes NAME", "Show top remote processes by CPU", 10*time.Second, remoteops.Processes)
+}
+
+func newServerLogsCmd(app *App) *cobra.Command {
+	var timeout time.Duration
+	var unit string
+	var lines int
+	cmd := &cobra.Command{
+		Use:   "logs NAME --unit UNIT",
+		Short: "Show remote systemd unit status and recent journal lines",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			srv, err := app.store.Get(args[0])
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			result, err := remoteops.Logs(ctx, app.ops, srv, unit, lines)
+			if err != nil {
+				return err
+			}
+			writeRemoteResult(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&unit, "unit", "", "systemd unit name")
+	cmd.Flags().IntVar(&lines, "lines", 100, "Journal lines to read")
+	cmd.Flags().DurationVar(&timeout, "timeout", 20*time.Second, "Remote command timeout")
+	_ = cmd.MarkFlagRequired("unit")
+	return cmd
+}
+
+func newServerRemoteCmd(app *App, use, short string, defaultTimeout time.Duration, fn func(context.Context, remoteops.Runner, inventory.Server) (remoteops.Result, error)) *cobra.Command {
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			srv, err := app.store.Get(args[0])
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			result, err := fn(ctx, app.ops, srv)
+			if err != nil {
+				return err
+			}
+			writeRemoteResult(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "Remote command timeout")
+	return cmd
+}
+
 func newEnvCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env",
@@ -402,6 +509,7 @@ func newTUICmd(app *App) *cobra.Command {
 			return tui.Run(tui.Deps{
 				Store:  app.store,
 				Config: app.cfg,
+				Ops:    app.ops,
 			})
 		},
 	}
@@ -492,6 +600,13 @@ func printServer(w io.Writer, srv inventory.Server) {
 	}
 	if len(srv.Tags) > 0 {
 		fmt.Fprintf(w, "tags: %s\n", strings.Join(srv.Tags, ","))
+	}
+}
+
+func writeRemoteResult(w io.Writer, result remoteops.Result) {
+	out := strings.TrimRight(result.Stdout, "\n")
+	if out != "" {
+		fmt.Fprintln(w, out)
 	}
 }
 

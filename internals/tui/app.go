@@ -17,11 +17,13 @@ import (
 	mgrenv "github.com/Omotolani98/mgr/internals/env"
 	"github.com/Omotolani98/mgr/internals/health"
 	"github.com/Omotolani98/mgr/internals/inventory"
+	"github.com/Omotolani98/mgr/internals/remoteops"
 )
 
 type Deps struct {
 	Store  *inventory.FileStore
 	Config config.Config
+	Ops    remoteops.Runner
 }
 
 type model struct {
@@ -37,6 +39,7 @@ type model struct {
 	status         string
 	errMsg         string
 	health         map[string]health.Status
+	ops            map[string]remoteops.Snapshot
 	envSecretCount int
 	envCheckedAt   time.Time
 	sshTarget      *inventory.Server
@@ -48,6 +51,11 @@ type envStatusMsg struct {
 	count     int
 	checkedAt time.Time
 	err       error
+}
+type opsMsg struct {
+	server string
+	snap   remoteops.Snapshot
+	err    error
 }
 type errMsg struct{ err error }
 
@@ -82,6 +90,7 @@ func newModel(deps Deps) model {
 		deps:   deps,
 		mode:   "servers",
 		health: map[string]health.Status{},
+		ops:    map[string]remoteops.Snapshot{},
 	}
 }
 
@@ -147,6 +156,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				return m, checkEnv(m.deps.Config.Foostash)
 			}
+		case "o":
+			if m.mode == "servers" {
+				if srv, ok := m.currentServer(); ok {
+					m.status = "running ops snapshot for " + srv.Name
+					m.errMsg = ""
+					return m, runOps(srv, m.deps.Ops)
+				}
+			}
 		case "s":
 			if m.mode == "servers" {
 				if srv, ok := m.currentServer(); ok {
@@ -177,6 +194,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.envSecretCount = msg.count
 			m.envCheckedAt = msg.checkedAt
 			m.status = fmt.Sprintf("foostash ok, %d secret(s)", msg.count)
+			m.errMsg = ""
+		}
+	case opsMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			m.status = ""
+		} else {
+			m.ops[msg.server] = msg.snap
+			m.status = fmt.Sprintf("ops snapshot completed for %s", msg.server)
 			m.errMsg = ""
 		}
 	case errMsg:
@@ -320,6 +346,14 @@ func (m model) renderServerDetail() string {
 		} else {
 			b.WriteString("health: unchecked\n")
 		}
+		if snap, ok := m.ops[srv.Name]; ok {
+			b.WriteString(fmt.Sprintf("ops_checked: %s\n", snap.CheckedAt.Format(time.RFC3339)))
+			b.WriteString("\n")
+			b.WriteString(titleStyle.Render("Ops"))
+			b.WriteString("\n")
+			b.WriteString(trimOutput(snap.String(), 1200))
+			b.WriteByte('\n')
+		}
 		return strings.TrimRight(b.String(), "\n")
 	}
 	return ""
@@ -410,9 +444,9 @@ func (m model) helpText() string {
 		return "tab servers • c check foostash • q quit"
 	}
 	if m.detail {
-		return "enter list • esc list • c check • s ssh • q quit"
+		return "enter list • esc list • c health • o ops • s ssh • q quit"
 	}
-	return "tab env • / filter • j/k move • enter detail • c check • s ssh • r reload • q quit"
+	return "tab env • / filter • j/k move • enter detail • c health • o ops • s ssh • r reload • q quit"
 }
 
 func loadServers(store *inventory.FileStore) tea.Cmd {
@@ -441,6 +475,18 @@ func checkEnv(cfg config.FoostashConfig) tea.Cmd {
 		defer cancel()
 		count, err := mgrenv.Status(ctx, provider)
 		return envStatusMsg{count: count, checkedAt: time.Now().UTC(), err: err}
+	}
+}
+
+func runOps(srv inventory.Server, runner remoteops.Runner) tea.Cmd {
+	return func() tea.Msg {
+		if runner == nil {
+			runner = remoteops.SystemSSHRunner{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		snap, err := remoteops.DefaultSnapshot(ctx, runner, srv)
+		return opsMsg{server: srv.Name, snap: snap, err: err}
 	}
 }
 
@@ -496,6 +542,14 @@ func empty(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func trimOutput(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n..."
 }
 
 func runSSH(srv inventory.Server) error {
