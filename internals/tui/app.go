@@ -25,23 +25,29 @@ type Deps struct {
 }
 
 type model struct {
-	deps      Deps
-	width     int
-	height    int
-	mode      string
-	servers   []inventory.Server
-	selected  int
-	status    string
-	errMsg    string
-	health    map[string]health.Status
-	sshTarget *inventory.Server
+	deps           Deps
+	width          int
+	height         int
+	mode           string
+	servers        []inventory.Server
+	selected       int
+	filtering      bool
+	filter         string
+	detail         bool
+	status         string
+	errMsg         string
+	health         map[string]health.Status
+	envSecretCount int
+	envCheckedAt   time.Time
+	sshTarget      *inventory.Server
 }
 
 type serversMsg []inventory.Server
 type healthMsg health.Status
 type envStatusMsg struct {
-	count int
-	err   error
+	count     int
+	checkedAt time.Time
+	err       error
 }
 type errMsg struct{ err error }
 
@@ -89,34 +95,56 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyPressMsg:
+		if m.filtering {
+			return m.updateFilter(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "esc":
+			if m.detail {
+				m.detail = false
+			}
 		case "tab":
 			if m.mode == "servers" {
 				m.mode = "env"
 			} else {
 				m.mode = "servers"
 			}
+			m.detail = false
+			m.filtering = false
+		case "/":
+			if m.mode == "servers" {
+				m.filtering = true
+				m.detail = false
+			}
 		case "r":
 			m.status = "reloading servers"
 			return m, loadServers(m.deps.Store)
 		case "down", "j":
-			if m.mode == "servers" && m.selected < len(m.servers)-1 {
+			if m.mode == "servers" && m.selected < len(m.filteredServers())-1 {
 				m.selected++
 			}
 		case "up", "k":
 			if m.mode == "servers" && m.selected > 0 {
 				m.selected--
 			}
+		case "enter":
+			if m.mode == "servers" {
+				if _, ok := m.currentServer(); ok {
+					m.detail = !m.detail
+				}
+			}
 		case "c":
 			if m.mode == "servers" {
 				if srv, ok := m.currentServer(); ok {
 					m.status = "checking " + srv.Name
+					m.errMsg = ""
 					return m, checkServer(srv)
 				}
 			} else {
 				m.status = "checking foostash"
+				m.errMsg = ""
 				return m, checkEnv(m.deps.Config.Foostash)
 			}
 		case "s":
@@ -129,9 +157,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case serversMsg:
 		m.servers = []inventory.Server(msg)
-		if m.selected >= len(m.servers) {
-			m.selected = 0
-		}
+		m.clampSelected()
 		m.status = fmt.Sprintf("loaded %d server(s)", len(m.servers))
 		m.errMsg = ""
 	case healthMsg:
@@ -148,6 +174,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = msg.err.Error()
 			m.status = ""
 		} else {
+			m.envSecretCount = msg.count
+			m.envCheckedAt = msg.checkedAt
 			m.status = fmt.Sprintf("foostash ok, %d secret(s)", msg.count)
 			m.errMsg = ""
 		}
@@ -155,6 +183,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = msg.err.Error()
 		m.status = ""
 	}
+	return m, nil
+}
+
+func (m model) updateFilter(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.filtering = false
+		m.filter = ""
+	case "enter":
+		m.filtering = false
+	case "backspace":
+		if len(m.filter) > 0 {
+			rs := []rune(m.filter)
+			m.filter = string(rs[:len(rs)-1])
+		}
+	default:
+		if text := msg.Key().Text; text != "" {
+			m.filter += text
+		}
+	}
+	m.clampSelected()
 	return m, nil
 }
 
@@ -188,16 +239,39 @@ func (m model) render() string {
 		b.WriteString(mutedStyle.Render(m.status))
 		b.WriteString("\n")
 	}
-	b.WriteString(mutedStyle.Render("tab switch • j/k move • c check • s ssh • r reload • q quit"))
+	b.WriteString(mutedStyle.Render(m.helpText()))
 	return b.String()
 }
 
 func (m model) renderServers() string {
+	servers := m.filteredServers()
 	if len(m.servers) == 0 {
 		return mutedStyle.Render("No servers yet. Add one with `mgr server add NAME --host HOST`.")
 	}
+	if len(servers) == 0 {
+		return warnStyle.Render(fmt.Sprintf("No servers match %q.", m.filter))
+	}
+	list := m.renderServerList(servers)
+	detail := m.renderServerDetail()
+	if m.width >= 100 && !m.detail {
+		return joinColumns(list, detail, m.width)
+	}
+	if m.detail {
+		return detail
+	}
+	return list + "\n\n" + detail
+}
+
+func (m model) renderServerList(servers []inventory.Server) string {
 	var b strings.Builder
-	for i, srv := range m.servers {
+	if m.filtering {
+		b.WriteString(selectedStyle.Render("filter: " + m.filter))
+		b.WriteString("\n\n")
+	} else if m.filter != "" {
+		b.WriteString(mutedStyle.Render("filter: " + m.filter))
+		b.WriteString("\n\n")
+	}
+	for i, srv := range servers {
 		line := fmt.Sprintf("%-22s %-28s %s", srv.Name, endpoint(srv), strings.Join(srv.Tags, ","))
 		if status, ok := m.health[srv.Name]; ok {
 			if status.Reachable {
@@ -213,12 +287,42 @@ func (m model) renderServers() string {
 		}
 		b.WriteByte('\n')
 	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m model) renderServerDetail() string {
 	if srv, ok := m.currentServer(); ok {
+		var b strings.Builder
+		b.WriteString(titleStyle.Render("Details"))
 		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render(fmt.Sprintf("selected: user=%s group=%s env=%s identity=%s",
-			empty(srv.User), empty(srv.Group), empty(srv.Env), empty(srv.IdentityFile))))
+		b.WriteString(fmt.Sprintf("name: %s\n", srv.Name))
+		b.WriteString(fmt.Sprintf("target: %s\n", endpoint(srv)))
+		b.WriteString(fmt.Sprintf("identity: %s\n", empty(srv.IdentityFile)))
+		b.WriteString(fmt.Sprintf("group: %s\n", empty(srv.Group)))
+		b.WriteString(fmt.Sprintf("env: %s\n", empty(srv.Env)))
+		b.WriteString(fmt.Sprintf("tags: %s\n", empty(strings.Join(srv.Tags, ","))))
+		if !srv.CreatedAt.IsZero() {
+			b.WriteString(fmt.Sprintf("created: %s\n", srv.CreatedAt.Format(time.RFC3339)))
+		}
+		if !srv.UpdatedAt.IsZero() {
+			b.WriteString(fmt.Sprintf("updated: %s\n", srv.UpdatedAt.Format(time.RFC3339)))
+		}
+		if status, ok := m.health[srv.Name]; ok {
+			state := "down"
+			if status.Reachable {
+				state = "up"
+			}
+			b.WriteString(fmt.Sprintf("health: %s %s", state, status.Latency.Round(time.Millisecond)))
+			if status.Error != "" {
+				b.WriteString(" " + status.Error)
+			}
+			b.WriteByte('\n')
+		} else {
+			b.WriteString("health: unchecked\n")
+		}
+		return strings.TrimRight(b.String(), "\n")
 	}
-	return b.String()
+	return ""
 }
 
 func (m model) renderEnv() string {
@@ -238,8 +342,12 @@ func (m model) renderEnv() string {
 		}
 		b.WriteString(fmt.Sprintf("master_key_env: %s\n", envName))
 	}
+	if !m.envCheckedAt.IsZero() {
+		b.WriteString(fmt.Sprintf("last_check: %s\n", m.envCheckedAt.Format(time.RFC3339)))
+		b.WriteString(fmt.Sprintf("secret_count: %d\n", m.envSecretCount))
+	}
 	b.WriteString("\n")
-	b.WriteString(mutedStyle.Render("Press c to verify access with the Foostash SDK."))
+	b.WriteString(mutedStyle.Render("Press c to verify access. Secret values stay hidden."))
 	return b.String()
 }
 
@@ -251,10 +359,60 @@ func (m model) modeLabel() string {
 }
 
 func (m model) currentServer() (inventory.Server, bool) {
-	if len(m.servers) == 0 || m.selected < 0 || m.selected >= len(m.servers) {
+	servers := m.filteredServers()
+	if len(servers) == 0 || m.selected < 0 || m.selected >= len(servers) {
 		return inventory.Server{}, false
 	}
-	return m.servers[m.selected], true
+	return servers[m.selected], true
+}
+
+func (m *model) clampSelected() {
+	servers := m.filteredServers()
+	if len(servers) == 0 {
+		m.selected = 0
+		return
+	}
+	if m.selected >= len(servers) {
+		m.selected = len(servers) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+}
+
+func (m model) filteredServers() []inventory.Server {
+	query := strings.ToLower(strings.TrimSpace(m.filter))
+	if query == "" {
+		return m.servers
+	}
+	out := make([]inventory.Server, 0, len(m.servers))
+	for _, srv := range m.servers {
+		haystack := strings.ToLower(strings.Join([]string{
+			srv.Name,
+			srv.Host,
+			srv.User,
+			srv.Group,
+			srv.Env,
+			strings.Join(srv.Tags, " "),
+		}, " "))
+		if strings.Contains(haystack, query) {
+			out = append(out, srv)
+		}
+	}
+	return out
+}
+
+func (m model) helpText() string {
+	if m.filtering {
+		return "type filter • enter apply • esc clear • ctrl+c quit"
+	}
+	if m.mode == "env" {
+		return "tab servers • c check foostash • q quit"
+	}
+	if m.detail {
+		return "enter list • esc list • c check • s ssh • q quit"
+	}
+	return "tab env • / filter • j/k move • enter detail • c check • s ssh • r reload • q quit"
 }
 
 func loadServers(store *inventory.FileStore) tea.Cmd {
@@ -282,8 +440,47 @@ func checkEnv(cfg config.FoostashConfig) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		count, err := mgrenv.Status(ctx, provider)
-		return envStatusMsg{count: count, err: err}
+		return envStatusMsg{count: count, checkedAt: time.Now().UTC(), err: err}
 	}
+}
+
+func joinColumns(left, right string, width int) string {
+	gap := "  "
+	leftWidth := width/2 - len(gap)
+	if leftWidth < 40 {
+		leftWidth = 40
+	}
+	leftLines := strings.Split(left, "\n")
+	rightLines := strings.Split(right, "\n")
+	maxLines := len(leftLines)
+	if len(rightLines) > maxLines {
+		maxLines = len(rightLines)
+	}
+	var b strings.Builder
+	for i := 0; i < maxLines; i++ {
+		l := ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		r := ""
+		if i < len(rightLines) {
+			r = rightLines[i]
+		}
+		b.WriteString(padRight(l, leftWidth))
+		b.WriteString(gap)
+		b.WriteString(r)
+		if i < maxLines-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func padRight(value string, width int) string {
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
 }
 
 func endpoint(srv inventory.Server) string {
