@@ -18,10 +18,10 @@ Module path is `github.com/Omotolani98/mgr`; the only binary is `mgr` (`cmd/mgr`
 
 ## Architecture
 
-`mgr` is a CLI + TUI for managing a local SSH server inventory and reading secrets from a Foostash server. `cmd/mgr/main.go` is a thin shell that calls `cli.Execute()`.
+`mgr` is a CLI + TUI for managing a local SSH server inventory, running read-only server inspection, and reading secrets from a Foostash server. `cmd/mgr/main.go` is a thin shell that calls `cli.Execute()`.
 
 **Command tree (`internals/cli/root.go`)** — Cobra, three top-level groups:
-- `server` — CRUD over local inventory (`add`, `list`, `get`, `remove`, `check`, `ssh`, `import ssh-config`).
+- `server` — CRUD over local inventory (`add`, `list`, `get`, `remove`, `check`, `ssh`, `import ssh-config`) plus read-only remote ops (`ops`, `uptime`, `disk`, `memory`, `processes`, `logs`).
 - `env` — read-only Foostash access (`configure`, `status`, `get`, `pull`, `watch`).
 - `tui` — launches the Bubble Tea UI.
 
@@ -35,7 +35,9 @@ Module path is `github.com/Omotolani98/mgr`; the only binary is `mgr` (`cmd/mgr`
 
 **Health (`internals/health`)** — `Check` is a plain TCP `DialTimeout` against `host:port`; used by both `server check` and the TUI.
 
-**TUI (`internals/tui`)** — Bubble Tea **v2** under the `charm.land/...` module paths (not the older `github.com/charmbracelet/bubbletea`). Two modes (`servers`/`env`), toggled with tab. Note the SSH pattern in `Run`: to open an interactive session the model sets `sshTarget` and quits; `Run` then execs `ssh` outside the alt-screen and re-enters the program in a loop.
+**Remote ops (`internals/remoteops`)** — read-only Linux inspection through the system `ssh` binary. Keep this boundary non-mutating: uptime, disk, memory, process listing, systemd logs, and combined snapshots are in scope; package installs, service restarts, file writes, provisioning, and deploy orchestration are not. The package exposes a `Runner` interface so tests can fake SSH and a Go SSH backend can be added later.
+
+**TUI (`internals/tui`)** — Bubble Tea **v2** under the `charm.land/...` module paths (not the older `github.com/charmbracelet/bubbletea`). Two modes (`servers`/`env`), toggled with tab. Server mode supports filtering, details, health checks, read-only ops snapshots, and SSH. Note the SSH pattern in `Run`: to open an interactive session the model sets `sshTarget` and quits; `Run` then execs `ssh` outside the alt-screen and re-enters the program in a loop.
 
 **ssh-config import (`internals/sshconfig`)** — hand-rolled OpenSSH config parser producing `inventory.Server`s tagged `ssh-config`; skips wildcard/`Match` blocks and expands `~`.
 

@@ -46,6 +46,13 @@ inventory records and tags them with `ssh-config`.
 Health checks in `internals/health` are TCP reachability checks against the
 server SSH endpoint. They intentionally do not require remote shell access.
 
+Read-only remote inspection lives in `internals/remoteops`. It runs fixed
+Linux-oriented commands through the system `ssh` binary and exposes an
+interface so a Go SSH backend can be added later. Current operations include
+uptime, disk, memory, top processes, unit logs, and a combined ops snapshot.
+These commands must stay read-only; provisioning, package installs, service
+restarts, file writes, and deploy orchestration belong in later features.
+
 Interactive SSH uses the system `ssh` binary. The TUI exits the alt-screen
 before launching SSH, then returns to the dashboard after the SSH process exits.
 
@@ -80,7 +87,7 @@ The terminal UI lives in `internals/tui` and uses Bubble Tea v2 via the
 The TUI has two modes:
 
 - Servers: list inventory, filter by `/`, move selection, toggle details with
-  enter, run health checks, and open SSH.
+  enter, run health checks, run read-only ops snapshots, and open SSH.
 - Environment: show Foostash configuration, verify SDK access, and display the
   last successful check time and secret count while keeping secret values
   hidden.

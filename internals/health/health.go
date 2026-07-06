@@ -2,8 +2,8 @@
 package health
 
 import (
-	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/Omotolani98/mgr/internals/inventory"
@@ -22,7 +22,7 @@ func Check(server inventory.Server, timeout time.Duration) Status {
 	if timeout == 0 {
 		timeout = 3 * time.Second
 	}
-	address := fmt.Sprintf("%s:%d", server.Host, server.Port)
+	address := net.JoinHostPort(server.Host, strconv.Itoa(server.Port))
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	checkedAt := time.Now().UTC()
