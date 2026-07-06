@@ -2,7 +2,7 @@
 package storage
 
 type Storage interface {
-	Save() error
-	Load() error
-	Delete() error
+	Save(key string, value []byte) error
+	Load(key string) ([]byte, error)
+	Delete(key string) error
 }
